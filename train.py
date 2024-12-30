@@ -147,7 +147,7 @@ def eval(model, eval_dataset):
 
 args = {
     "exp_name": "STIRER_S",
-    "batch_size": 64,  # 128
+    "batch_size": 228,  # 128
     "multi_card": False,
     "train_dataset": [
         "dataset/OCR_Syn_Train/ST/",
@@ -286,6 +286,7 @@ for epoch in range(args["Epoch"]):
         img_lr = img_lr.to(device)
         label_tensors = label_tensors.to(device)
         length_tensors = length_tensors.to(device)
+        label_ce = label_ce.to(device)
         # print(img_hr.shape, img_lr.shape, label_tensors.shape, length_tensors.shape)
         sr, ar_logit, srs, logits = model(img_lr, label_ce)
         # print(type(ar_logit))

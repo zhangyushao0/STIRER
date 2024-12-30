@@ -15,12 +15,13 @@ from utils.label_converter import get_charset, strLabelConverter, str_filt
 from torchvision import transforms as T
 
 
-def buf2PIL(txn, key, type="RGB"):
-    imgbuf = txn.get(key)
-    buf = six.BytesIO()
-    buf.write(imgbuf)
-    buf.seek(0)
-    im = Image.open(buf).convert(type)
+def buf2PIL(txn, key, type):
+    buf = txn.get(key)
+    try:
+        im = Image.open(io.BytesIO(buf)).convert(type)
+    except OSError as e:
+        print(f"Error loading image with key {key}: {e}")
+        im = Image.new(type, (64, 64))  # 创建一个空白图像作为占位符
     return im
 
 

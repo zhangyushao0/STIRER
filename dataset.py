@@ -3,6 +3,7 @@ import lmdb
 import six
 import random
 import numpy as np
+import io
 
 # import cv2
 import os

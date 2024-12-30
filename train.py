@@ -349,7 +349,10 @@ for epoch in range(args["Epoch"]):
             if acc > max_acc:
                 max_acc = acc
                 print("Saving Best")
-                save_dict = model.module.state_dict()
+                if args["multi_card"]:
+                    save_dict = model.module.state_dict()
+                else:
+                    save_dict = model.state_dict()
                 torch.save(save_dict, os.path.join("ckpt", args["exp_name"] + ".pth"))
             # os._exit(233)
         # if it == 300:

@@ -147,7 +147,7 @@ def eval(model, eval_dataset):
 
 args = {
     "exp_name": "STIRER_S",
-    "batch_size": 228,  # 128
+    "batch_size": 256,  # 128
     "multi_card": False,
     "train_dataset": [
         "dataset/OCR_Syn_Train/ST/",
@@ -278,6 +278,8 @@ label_converter = strLabelConverter(get_charset(args["charset"]))
 calculate_ssim = SSIM()
 max_acc = 0.0
 start_time = time.time()  # 记录开始时间
+scaler = torch.cuda.amp.GradScaler()
+
 for epoch in range(args["Epoch"]):
     for it, batch in enumerate(train_loader):
         img_hr, img_lr, label_tensors, length_tensors, label_strs, label_ce = batch
@@ -287,41 +289,35 @@ for epoch in range(args["Epoch"]):
         label_tensors = label_tensors.to(device)
         length_tensors = length_tensors.to(device)
         label_ce = label_ce.to(device)
-        # print(img_hr.shape, img_lr.shape, label_tensors.shape, length_tensors.shape)
-        sr, ar_logit, srs, logits = model(img_lr, label_ce)
-        # print(type(ar_logit))
-        # logits.append(logit)
-        srs.append(sr)
-        lengths_input = torch.zeros_like(length_tensors).fill_(logits[0].size(1)).long()
-        loss_sr, loss_rec = 0.0, (len(logits) + 1) * ar_logit.loss.mean()
-        # print(loss_rec)
 
-        # # TODO
-        # srs = [srs[-1]]
-        # logits = []
-
-        if args["sr"]:
-            for step, sr in enumerate(srs):
-                loss_sr += (step + 1) * loss_pixel(sr, img_hr).mean()
-        if args["rec"]:
-            for step, logit in enumerate(logits):
-                # print(logits.shape, label_tensors.shape, lengths_input.shape, length_tensors.shape)
-                # print(label_tensors[:50])
-                logit = torch.nn.functional.log_softmax(logit, -1)
-                # with torch.backends.cudnn.flags(enabled=False):
-                # print(max(label_tensors),logits.shape,"F",length_tensors)
-                # with torch.backends.cudnn.flags(enabled=False):
-                loss_rec += (step + 1) * loss_ctc(
-                    log_probs=logit.transpose(0, 1),
-                    targets=label_tensors.long(),
-                    input_lengths=lengths_input.long(),
-                    target_lengths=length_tensors.long(),
-                )
-        loss = args["alpha"] * loss_sr + (1 - args["alpha"]) * loss_rec
-        # print("loss=",loss)
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+
+        with torch.cuda.amp.autocast():
+            sr, ar_logit, srs, logits = model(img_lr, label_ce)
+            srs.append(sr)
+            lengths_input = (
+                torch.zeros_like(length_tensors).fill_(logits[0].size(1)).long()
+            )
+            loss_sr, loss_rec = 0.0, (len(logits) + 1) * ar_logit.loss.mean()
+
+            if args["sr"]:
+                for step, sr in enumerate(srs):
+                    loss_sr += (step + 1) * loss_pixel(sr, img_hr).mean()
+            if args["rec"]:
+                for step, logit in enumerate(logits):
+                    logit = torch.nn.functional.log_softmax(logit, -1)
+                    loss_rec += (step + 1) * loss_ctc(
+                        log_probs=logit.transpose(0, 1),
+                        targets=label_tensors.long(),
+                        input_lengths=lengths_input.long(),
+                        target_lengths=length_tensors.long(),
+                    )
+            loss = args["alpha"] * loss_sr + (1 - args["alpha"]) * loss_rec
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
         if it % args["print_iter"] == 0:
             elapsed_time = time.time() - start_time
             avg_time_per_iter = elapsed_time / (epoch * len(train_loader) + it + 1)
@@ -343,9 +339,9 @@ for epoch in range(args["Epoch"]):
                 ),
                 flush=True,
             )
+
         if it % args["eval_iter"] == 1 and it != 1:
             acc = eval(model, eval_datasets)
-            # os._exit(233)
             if acc > max_acc:
                 max_acc = acc
                 print("Saving Best")
@@ -354,9 +350,7 @@ for epoch in range(args["Epoch"]):
                 else:
                     save_dict = model.state_dict()
                 torch.save(save_dict, os.path.join("ckpt", args["exp_name"] + ".pth"))
-            # os._exit(233)
-        # if it == 300:
-        #     os._exit(233)
+
     if epoch in [4]:
         print("Reduce LR")
         lr = optimizer.param_groups[0]["lr"]

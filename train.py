@@ -15,10 +15,10 @@ from torch.utils.data import ConcatDataset
 from utils.loss import ImageLoss
 from utils.label_converter import get_charset, strLabelConverter, str_filt
 from utils.ssim_psnr import calculate_psnr, SSIM
-from dataset import LRSTRDataset, LRSTR_collect_fn
+from dataset import TextPairDataset, LRSTR_collect_fn
 
 
-def eval(model, eval_dataset):
+def eval(model, eval_datasets):
     print("----------------<Evaluation>----------------")
     model.eval()
     global_accs = []
@@ -32,7 +32,7 @@ def eval(model, eval_dataset):
     # Evaluation
     for eval_dataset in eval_datasets:
         crnn_accs = []
-        print("Evaluating", eval_dataset.dataset_name)
+        print("Evaluating")
         eval_data_loader = torch.utils.data.DataLoader(
             eval_dataset,
             batch_size=64,
@@ -69,17 +69,16 @@ def eval(model, eval_dataset):
                             for j in range(len(ids)):
                                 if ids[j] == len(charset) + 1:
                                     break
-                                # print('HANDLING',ids[j],decode_mapper[ids[j]])
                                 pred_str += decode_mapper[ids[j]]
-                                # print("PP",pred_str)
                             pred_strs.append(pred_str)
-                        # print('gt=',label_strs[i],'pred=',pred_str,'data=',logits[step][i])
                     else:
                         logit = logits[step].softmax(-1)
                         pred_strs = label_converter.decode(
                             torch.argmax(logit, 2).view(-1),
                             torch.IntTensor([logit.size(1)] * BS),
                         )
+                        if isinstance(pred_strs, str):
+                            pred_strs = [pred_strs]  # 确保pred_strs是列表
                 for i in range(BS):
                     if args["sr"]:
                         sr = img_sr[i, ...]
@@ -89,12 +88,13 @@ def eval(model, eval_dataset):
                         metrics_recorder["psnr_" + str(step)].append(psnr)
                         metrics_recorder["ssim_" + str(step)].append(ssim)
                     if args["rec"]:
-                        pred_str = pred_strs[i]
-                        # pred_str = str_filt(pred_str,'lower')
-                        gt_str = label_strs[i]
-                        # gt_str = str_filt(gt_str,'lower')
-                        if pred_str == gt_str:
-                            metrics_recorder["acc_" + str(step)].append(True)
+                        if i < len(pred_strs):  # 添加索引检查
+                            pred_str = pred_strs[i]
+                            gt_str = label_strs[i]
+                            if pred_str == gt_str:
+                                metrics_recorder["acc_" + str(step)].append(True)
+                            else:
+                                metrics_recorder["acc_" + str(step)].append(False)
                         else:
                             metrics_recorder["acc_" + str(step)].append(False)
             logits_last = crnn(srs[-1]).softmax(-1).transpose(0, 1)
@@ -102,17 +102,22 @@ def eval(model, eval_dataset):
                 torch.argmax(logits_last, 2).view(-1),
                 torch.IntTensor([logits_last.size(1)] * BS),
             )
+            if isinstance(pred_strs_crnn, str):
+                pred_strs_crnn = [pred_strs_crnn]  # 确保pred_strs_crnn是列表
             for i in range(BS):
-                pred_str = pred_strs_crnn[i]
-                pred_str = str_filt(pred_str, "lower")
-                gt_str = label_strs[i]
-                gt_str = str_filt(gt_str, "lower")
-                if pred_str == gt_str:
-                    crnn_accs.append(True)
+                if i < len(pred_strs_crnn):  # 添加索引检查
+                    pred_str = pred_strs_crnn[i]
+                    pred_str = str_filt(pred_str, "lower")
+                    gt_str = label_strs[i]
+                    gt_str = str_filt(gt_str, "lower")
+                    if pred_str == gt_str:
+                        crnn_accs.append(True)
+                    else:
+                        crnn_accs.append(False)
                 else:
                     crnn_accs.append(False)
                 global_crnn_accs.append(crnn_accs[-1])
-            # os._exit(-1)
+
         for k in metrics_recorder.keys():
             if len(metrics_recorder[k]) == 0:
                 metrics_recorder[k].append(-1)
@@ -147,22 +152,19 @@ def eval(model, eval_dataset):
 
 args = {
     "exp_name": "STIRER_S",
-    "batch_size": 256,  # 128
+    "batch_size": 64,  # 128
     "multi_card": False,
     "train_dataset": [
-        "dataset/OCR_Syn_Train/ST/",
-        "dataset/OCR_Syn_Train/MJ/MJ_train/",
+        "dataset/syth80k/train",
     ],
     "eval_dataset": [
-        "dataset/textzoom/test/easy/",
-        "dataset/textzoom/test/medium/",
-        "dataset/textzoom/test/hard/",
+        "dataset/syth80k/test",
     ],
     "Epoch": 8,
     "alpha": 0.5,
     "print_iter": 100,
     "num_gpu": 1,
-    "eval_iter": 500,
+    "eval_iter": 200,
     "resume": "",
     "seed": 3721,
     "sr": True,
@@ -184,7 +186,7 @@ model = STIRER(
     img_size=(16, 64),
     window_size=(16, 2),
     img_range=1.0,
-    depths=[4, 5, 6],
+    depths=[3, 4, 5],
     embed_dim=48,
     num_heads=[6, 6, 6],
     mlp_ratio=2,
@@ -235,14 +237,14 @@ if args["multi_card"]:
 # os._exit(2333)
 train_dataset = ConcatDataset(
     [
-        LRSTRDataset(root, syn=True, max_len=20, train=True, args=args)
+        TextPairDataset(root, max_len=20, train=True, args=args)
         for root in args["train_dataset"]
     ]
 )
 collect_fn = LRSTR_collect_fn(args=args)
 collect_fn_eval = LRSTR_collect_fn(train=False, args=args)
 eval_datasets = [
-    LRSTRDataset(root, syn=False, args=args) for root in args["eval_dataset"]
+    TextPairDataset(root, args=args) for root in args["eval_dataset"]
 ]
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -271,7 +273,7 @@ optimizer = optim.AdamW(
         {"params": base_params},
         {"params": sr_params, "lr": 5e-4},
     ],
-    lr=1e-4,
+    lr=5e-4,
 )
 charset = get_charset(args["charset"])
 label_converter = strLabelConverter(get_charset(args["charset"]))
